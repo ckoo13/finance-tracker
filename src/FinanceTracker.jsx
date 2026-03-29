@@ -18,23 +18,6 @@ const CATEGORY_COLORS = {
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-const ASSET_FIELDS = [
-  { key: "401k", label: "401K" },
-  { key: "coinbase", label: "Coinbase" },
-  { key: "sunstone_coinvest", label: "Sunstone Co-Invest" },
-  { key: "bofa_checking", label: "BofA Checking" },
-  { key: "schwab", label: "Charles Schwab" },
-  { key: "bofa_savings", label: "BofA Savings" },
-  { key: "hsa_alphasights", label: "HSA (AlphaSights)" },
-  { key: "hsa_sunstone", label: "HSA (Sunstone)" },
-];
-
-const LIABILITY_FIELDS = [
-  { key: "bilt_card", label: "BILT Card" },
-  { key: "amex_delta", label: "AMEX Delta" },
-];
-
-const LIQUID_KEYS = ["bofa_checking", "schwab", "bofa_savings"];
 
 // Storage handled by Supabase
 
@@ -154,15 +137,26 @@ export default function FinanceTracker({ session, onChangePassword }) {
   const [nwLiabilities, setNwLiabilities] = useState({});
   const [nwPendingCredits, setNwPendingCredits] = useState([{ label: "SP Expenses", amount: "" }]);
 
+  // Dynamic per-user field config
+  const [assetFields, setAssetFields] = useState([]);
+  const [liabilityFields, setLiabilityFields] = useState([]);
+  const [managingFields, setManagingFields] = useState(false);
+  const [newFieldLabel, setNewFieldLabel] = useState('');
+  const [newFieldType, setNewFieldType] = useState('asset');
+  const [newFieldLiquid, setNewFieldLiquid] = useState(false);
+
   const resetNWForm = () => { setNwDate(new Date().toISOString().slice(0, 10)); setNwAssets({}); setNwLiabilities({}); setNwPendingCredits([{ label: "SP Expenses", amount: "" }]); };
 
   useEffect(() => {
     if (!userId) return;
     (async () => {
-      const [{ data: txns }, { data: nwh }] = await Promise.all([
+      const [{ data: txns }, { data: nwh }, { data: fields }] = await Promise.all([
         supabase.from('transactions').select('*').eq('user_id', userId).order('date', { ascending: false }),
-        supabase.from('net_worth_snapshots').select('*').eq('user_id', userId).order('date', { ascending: true })
+        supabase.from('net_worth_snapshots').select('*').eq('user_id', userId).order('date', { ascending: true }),
+        supabase.from('user_nw_fields').select('*').eq('user_id', userId).order('sort_order')
       ]);
+      setAssetFields((fields || []).filter(f => f.field_type === 'asset'));
+      setLiabilityFields((fields || []).filter(f => f.field_type === 'liability'));
       setTransactions((txns || []).map(t => ({
         id: t.id, date: t.date, description: t.description,
         amount: parseFloat(t.amount), category: t.category, monthKey: t.month_key
@@ -273,12 +267,12 @@ export default function FinanceTracker({ session, onChangePassword }) {
   const handleAddNetWorth = async () => {
     if (!nwDate) { notify("Please select a date"); return; }
     const assets = {}; let totalAssets = 0;
-    ASSET_FIELDS.forEach(f => { const v = parseFloat(nwAssets[f.key]) || 0; assets[f.key] = v; totalAssets += v; });
+    assetFields.forEach(f => { const v = parseFloat(nwAssets[f.key]) || 0; assets[f.key] = v; totalAssets += v; });
     const liabilities = {}; let totalLiabilities = 0;
-    LIABILITY_FIELDS.forEach(f => { const v = parseFloat(nwLiabilities[f.key]) || 0; liabilities[f.key] = v; totalLiabilities += v; });
+    liabilityFields.forEach(f => { const v = parseFloat(nwLiabilities[f.key]) || 0; liabilities[f.key] = v; totalLiabilities += v; });
     const pendingCredits = nwPendingCredits.filter(pc => pc.label.trim() && parseFloat(pc.amount)).map(pc => ({ label: pc.label.trim(), amount: parseFloat(pc.amount) }));
     const totalPending = pendingCredits.reduce((s, pc) => s + pc.amount, 0);
-    const liquidTotal = LIQUID_KEYS.reduce((s, k) => s + (assets[k] || 0), 0);
+    const liquidTotal = assetFields.filter(f => f.is_liquid).reduce((s, f) => s + (assets[f.key] || 0), 0);
     const netWorth = totalAssets - totalLiabilities + totalPending;
     const { data, error } = await supabase.from('net_worth_snapshots').insert({
       user_id: userId, date: nwDate, assets, liabilities, pending_credits: pendingCredits,
@@ -311,6 +305,28 @@ export default function FinanceTracker({ session, onChangePassword }) {
     setTransactions(transactions.map(t => t.id === id ? { ...t, ...updates } : t));
     setEditingTxn(null); notify("Updated");
   };
+  const addNwField = async () => {
+    if (!newFieldLabel.trim()) return;
+    const key = newFieldLabel.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const sortOrder = newFieldType === 'asset' ? assetFields.length : liabilityFields.length;
+    const { data, error } = await supabase.from('user_nw_fields').insert({
+      user_id: userId, field_type: newFieldType, key, label: newFieldLabel.trim(),
+      is_liquid: newFieldType === 'asset' ? newFieldLiquid : false, sort_order: sortOrder
+    }).select().single();
+    if (error) { notify('Error: ' + error.message); return; }
+    if (newFieldType === 'asset') setAssetFields([...assetFields, data]);
+    else setLiabilityFields([...liabilityFields, data]);
+    setNewFieldLabel(''); setNewFieldLiquid(false);
+    notify('Field added');
+  };
+
+  const deleteNwField = async (id, type) => {
+    await supabase.from('user_nw_fields').delete().eq('id', id);
+    if (type === 'asset') setAssetFields(assetFields.filter(f => f.id !== id));
+    else setLiabilityFields(liabilityFields.filter(f => f.id !== id));
+    notify('Field removed');
+  };
+
   const deleteNetWorth = async (id) => {
     await supabase.from('net_worth_snapshots').delete().eq('id', id);
     setNetWorthHistory(netWorthHistory.filter(n => n.id !== id));
@@ -392,7 +408,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "24px", fontSize: "13px" }}>
                   <div>
                     <div style={{ ...sectionLabel, marginTop: 0, color: "#34D399" }}>Assets</div>
-                    {ASSET_FIELDS.map(f => (
+                    {assetFields.map(f => (
                       <div key={f.key} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #1a1a2e" }}>
                         <span style={{ color: "#9ca3af" }}>{f.label}</span>
                         <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "12px" }}>{formatCurrency(latestNW.assets?.[f.key] || 0)}</span>
@@ -405,7 +421,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
                   </div>
                   <div>
                     <div style={{ ...sectionLabel, marginTop: 0, color: "#E8524A" }}>Liabilities</div>
-                    {LIABILITY_FIELDS.map(f => (
+                    {liabilityFields.map(f => (
                       <div key={f.key} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #1a1a2e" }}>
                         <span style={{ color: "#9ca3af" }}>{f.label}</span>
                         <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "12px", color: "#E8524A" }}>{formatCurrency(latestNW.liabilities?.[f.key] || 0)}</span>
@@ -994,8 +1010,57 @@ export default function FinanceTracker({ session, onChangePassword }) {
                 <input type="date" value={nwDate} onChange={e => setNwDate(e.target.value)} style={{ ...inputStyle, marginTop: "4px", maxWidth: "220px" }} />
               </div>
 
+              {/* Manage Fields */}
+              <div style={{ marginTop: "16px", marginBottom: "4px", display: "flex", justifyContent: "flex-end" }}>
+                <button onClick={() => setManagingFields(!managingFields)} style={{ background: "none", border: "1px solid #252545", borderRadius: "6px", color: "#6b7280", cursor: "pointer", padding: "4px 12px", fontSize: "12px", fontFamily: "'DM Sans', sans-serif" }}>
+                  {managingFields ? "Done" : "Manage Fields"}
+                </button>
+              </div>
+
+              {managingFields && (
+                <div style={{ background: "#1a1a2e", borderRadius: "10px", padding: "16px", marginBottom: "8px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                  <div>
+                    <div style={{ fontSize: "11px", color: "#34D399", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>Assets</div>
+                    {assetFields.map(f => (
+                      <div key={f.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "4px 0" }}>
+                        <span style={{ flex: 1, fontSize: "13px" }}>{f.label}</span>
+                        {f.is_liquid && <span style={{ fontSize: "10px", color: "#5B8DEF", border: "1px solid #252545", borderRadius: "4px", padding: "1px 6px" }}>liquid</span>}
+                        <button onClick={() => deleteNwField(f.id, 'asset')} style={{ background: "none", border: "none", color: "#6b7280", cursor: "pointer", fontSize: "16px", padding: "0 4px" }}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: "11px", color: "#E8524A", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "6px" }}>Liabilities</div>
+                    {liabilityFields.map(f => (
+                      <div key={f.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "4px 0" }}>
+                        <span style={{ flex: 1, fontSize: "13px" }}>{f.label}</span>
+                        <button onClick={() => deleteNwField(f.id, 'liability')} style={{ background: "none", border: "none", color: "#6b7280", cursor: "pointer", fontSize: "16px", padding: "0 4px" }}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ borderTop: "1px solid #252545", paddingTop: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <div style={{ fontSize: "11px", color: "#6b7280", textTransform: "uppercase", letterSpacing: "1px" }}>Add Field</div>
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                      <input value={newFieldLabel} onChange={e => setNewFieldLabel(e.target.value)} placeholder="Label (e.g. Vanguard)" style={{ ...inputStyle, flex: 1, minWidth: "120px" }} />
+                      <select value={newFieldType} onChange={e => setNewFieldType(e.target.value)} style={{ ...selectStyle, width: "auto" }}>
+                        <option value="asset">Asset</option>
+                        <option value="liability">Liability</option>
+                      </select>
+                      {newFieldType === 'asset' && (
+                        <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#6b7280", cursor: "pointer" }}>
+                          <input type="checkbox" checked={newFieldLiquid} onChange={e => setNewFieldLiquid(e.target.checked)} />
+                          Liquid
+                        </label>
+                      )}
+                      <button onClick={addNwField} style={{ background: "#5B8DEF", color: "#fff", border: "none", borderRadius: "6px", padding: "8px 16px", fontSize: "13px", fontWeight: 600, cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>Add</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div style={sectionLabel}>Assets</div>
-              {ASSET_FIELDS.map(f => (
+              {assetFields.length === 0 && <div style={{ fontSize: "12px", color: "#4b5563", padding: "8px 0" }}>No asset fields yet — click "Manage Fields" to add some.</div>}
+              {assetFields.map(f => (
                 <div key={f.key} style={fieldRow}>
                   <span style={fieldLabel}>{f.label}</span>
                   <div style={{ position: "relative", flex: 1 }}>
@@ -1007,12 +1072,12 @@ export default function FinanceTracker({ session, onChangePassword }) {
               <div style={{ ...fieldRow, paddingTop: "8px", borderTop: "1px solid #252545", marginTop: "4px" }}>
                 <span style={{ ...fieldLabel, fontWeight: 600, color: "#e0e0e0" }}>Total Assets</span>
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "14px", color: "#34D399", fontWeight: 600 }}>
-                  {formatCurrency(ASSET_FIELDS.reduce((s, f) => s + (parseFloat(nwAssets[f.key]) || 0), 0))}
+                  {formatCurrency(assetFields.reduce((s, f) => s + (parseFloat(nwAssets[f.key]) || 0), 0))}
                 </span>
               </div>
 
               <div style={sectionLabel}>Liabilities</div>
-              {LIABILITY_FIELDS.map(f => (
+              {liabilityFields.map(f => (
                 <div key={f.key} style={fieldRow}>
                   <span style={fieldLabel}>{f.label}</span>
                   <div style={{ position: "relative", flex: 1 }}>
@@ -1024,7 +1089,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
               <div style={{ ...fieldRow, paddingTop: "8px", borderTop: "1px solid #252545", marginTop: "4px" }}>
                 <span style={{ ...fieldLabel, fontWeight: 600, color: "#e0e0e0" }}>Total Liabilities</span>
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "14px", color: "#E8524A", fontWeight: 600 }}>
-                  {formatCurrency(LIABILITY_FIELDS.reduce((s, f) => s + (parseFloat(nwLiabilities[f.key]) || 0), 0))}
+                  {formatCurrency(liabilityFields.reduce((s, f) => s + (parseFloat(nwLiabilities[f.key]) || 0), 0))}
                 </span>
               </div>
 
@@ -1050,16 +1115,16 @@ export default function FinanceTracker({ session, onChangePassword }) {
                 </div>
                 <div style={{ fontSize: "28px", fontWeight: 700, color: "#34D399", fontFamily: "'JetBrains Mono', monospace" }}>
                   {formatCurrency(
-                    ASSET_FIELDS.reduce((s, f) => s + (parseFloat(nwAssets[f.key]) || 0), 0)
-                    - LIABILITY_FIELDS.reduce((s, f) => s + (parseFloat(nwLiabilities[f.key]) || 0), 0)
+                    assetFields.reduce((s, f) => s + (parseFloat(nwAssets[f.key]) || 0), 0)
+                    - liabilityFields.reduce((s, f) => s + (parseFloat(nwLiabilities[f.key]) || 0), 0)
                     + nwPendingCredits.reduce((s, pc) => s + (parseFloat(pc.amount) || 0), 0)
                   )}
                 </div>
               </div>
               <div style={{ marginTop: "8px", padding: "10px 16px", background: "#1a1a2e", borderRadius: "8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ fontSize: "12px", color: "#5B8DEF" }}>Cash Liquidity (BofA + Schwab)</div>
+                <div style={{ fontSize: "12px", color: "#5B8DEF" }}>Cash Liquidity ({assetFields.filter(f => f.is_liquid).map(f => f.label).join(' + ') || 'none'})</div>
                 <div style={{ fontSize: "16px", fontWeight: 600, color: "#5B8DEF", fontFamily: "'JetBrains Mono', monospace" }}>
-                  {formatCurrency(LIQUID_KEYS.reduce((s, k) => s + (parseFloat(nwAssets[k]) || 0), 0))}
+                  {formatCurrency(assetFields.filter(f => f.is_liquid).reduce((s, f) => s + (parseFloat(nwAssets[f.key]) || 0), 0))}
                 </div>
               </div>
 
