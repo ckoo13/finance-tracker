@@ -179,7 +179,30 @@ export default function FinanceTracker({ session, onChangePassword }) {
 
   const saveTxns = useCallback(async (txns) => { setTransactions(txns); }, []);
   const saveNW = useCallback(async (nwh) => { setNetWorthHistory(nwh); }, []);
+  const [aiInsights, setAiInsights] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState(null);
+
   const notify = (msg) => { setNotification(msg); setTimeout(() => setNotification(null), 3000); };
+
+  const generateAiInsights = async (spendingData, monthsOfData, savingsRate, monthlySurplus, avgMonthlySpend, monthlyNet) => {
+    setAiLoading(true);
+    setAiError(null);
+    setAiInsights(null);
+    try {
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spendingData, monthsOfData, savingsRate, monthlySurplus, avgMonthlySpend, monthlyNet }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to generate insights');
+      setAiInsights(data.insights);
+    } catch (err) {
+      setAiError(err.message);
+    }
+    setAiLoading(false);
+  };
 
   const handleSignOut = async () => { await supabase.auth.signOut(); };
 
@@ -741,6 +764,49 @@ export default function FinanceTracker({ session, onChangePassword }) {
                   </div>
 
                 </div>
+              </Card>
+
+              {/* AI Insights */}
+              <Card>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
+                  <div style={sectionLabel}>AI Insights</div>
+                  <button
+                    onClick={() => generateAiInsights(catMonthlyAvg, monthsWithData, savingsRate, monthlySurplus, monthlyAvgSpend, AVG_MONTHLY_NET)}
+                    disabled={aiLoading}
+                    style={{ background: aiLoading ? "#252545" : "#5B8DEF", color: "#fff", border: "none", borderRadius: "6px", padding: "6px 14px", fontSize: "12px", fontWeight: 600, cursor: aiLoading ? "default" : "pointer", fontFamily: "'DM Sans', sans-serif", opacity: aiLoading ? 0.6 : 1 }}
+                  >
+                    {aiLoading ? "Analyzing..." : aiInsights ? "Regenerate" : "Generate Insights"}
+                  </button>
+                </div>
+                {aiError && (
+                  <div style={{ padding: "12px", background: "#2a1a1e", border: "1px solid #E8524A", borderRadius: "8px", fontSize: "13px", color: "#E8524A" }}>{aiError}</div>
+                )}
+                {!aiInsights && !aiLoading && !aiError && (
+                  <div style={{ textAlign: "center", padding: "32px", color: "#4b5563", fontSize: "13px" }}>
+                    Click "Generate Insights" to get AI-powered analysis of your spending patterns.
+                  </div>
+                )}
+                {aiLoading && (
+                  <div style={{ textAlign: "center", padding: "32px", color: "#6b7280", fontSize: "13px" }}>
+                    Analyzing your spending data...
+                  </div>
+                )}
+                {aiInsights && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                    {aiInsights.map((insight, i) => {
+                      const borderColor = insight.severity === "warning" ? "#E8524A" : insight.severity === "positive" ? "#34D399" : "#5B8DEF";
+                      return (
+                        <div key={i} style={{ padding: "14px", background: "#1a1a2e", borderRadius: "8px", borderLeft: `3px solid ${borderColor}` }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                            <div style={{ fontSize: "13px", fontWeight: 600 }}>{insight.title}</div>
+                            {insight.amount && <div style={{ fontSize: "12px", color: borderColor, fontFamily: "'JetBrains Mono', monospace" }}>{insight.amount}</div>}
+                          </div>
+                          <div style={{ fontSize: "12px", color: "#9ca3af", lineHeight: 1.6 }}>{insight.detail}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </Card>
 
               {/* Top expenses */}
