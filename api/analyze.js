@@ -43,6 +43,10 @@ Format your response as a JSON array of insight objects, each with:
 
 Return only valid JSON, no markdown fences.`;
 
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not set in environment variables' });
+  }
+
   try {
     const message = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
@@ -50,11 +54,13 @@ Return only valid JSON, no markdown fences.`;
       messages: [{ role: 'user', content: prompt }],
     });
 
-    const text = message.content[0].text;
+    let text = message.content[0].text.trim();
+    // Strip markdown fences if Claude added them anyway
+    text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
     const insights = JSON.parse(text);
     res.status(200).json({ insights });
   } catch (err) {
-    console.error('Claude API error:', err);
-    res.status(500).json({ error: 'Failed to generate insights' });
+    console.error('Claude API error:', err.message);
+    res.status(500).json({ error: err.message || 'Failed to generate insights' });
   }
 }
