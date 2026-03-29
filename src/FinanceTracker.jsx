@@ -132,7 +132,7 @@ function BarChart({ data, height = 200, onBarClick }) {
   );
 }
 
-export default function FinanceTracker({ session }) {
+export default function FinanceTracker({ session, onChangePassword }) {
   const userId = session?.user?.id;
   const [tab, setTab] = useState("dashboard");
   const [transactions, setTransactions] = useState([]);
@@ -333,7 +333,8 @@ export default function FinanceTracker({ session }) {
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
           <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#34D399" }} />
           <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700, letterSpacing: "-0.5px" }}>Finance Tracker</h1>
-          <button onClick={handleSignOut} style={{ marginLeft: "auto", background: "none", border: "1px solid #252545", borderRadius: "6px", color: "#6b7280", cursor: "pointer", padding: "6px 14px", fontSize: "12px", fontFamily: "'DM Sans', sans-serif" }}>Sign Out</button>
+          <button onClick={onChangePassword} style={{ marginLeft: "auto", background: "none", border: "1px solid #252545", borderRadius: "6px", color: "#6b7280", cursor: "pointer", padding: "6px 14px", fontSize: "12px", fontFamily: "'DM Sans', sans-serif" }}>Change Password</button>
+          <button onClick={handleSignOut} style={{ background: "none", border: "1px solid #252545", borderRadius: "6px", color: "#6b7280", cursor: "pointer", padding: "6px 14px", fontSize: "12px", fontFamily: "'DM Sans', sans-serif" }}>Sign Out</button>
           <span style={{ fontSize: "12px", color: "#6b7280", marginLeft: "auto", fontFamily: "'JetBrains Mono', monospace" }}>{transactions.length} txns · {netWorthHistory.length} snapshots</span>
         </div>
         <div style={{ display: "flex" }}>
