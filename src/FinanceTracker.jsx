@@ -536,13 +536,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
             })
             .sort((a, b) => b.avg - a.avg);
 
-          const overBudgetItems = catAnalysis.filter(c => c.overBy && c.overBy > 0);
-          const totalOverage = overBudgetItems.reduce((s, c) => s + c.overBy, 0);
 
-          // Top discretionary spending items
-          const discretionaryCats = ["Eating Out", "Entertainment", "Shopping", "Friends", "Sports"];
-          const discretionaryTotal = discretionaryCats.reduce((s, c) => s + (catMonthlyAvg[c] || 0), 0);
-          const discretionaryPct = (discretionaryTotal / REG_MONTHLY_NET) * 100;
 
           // Find top individual expenses
           const topExpenses = [...filteredTxns]
@@ -680,91 +674,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
                 </div>
               </Card>
 
-              {/* Insights */}
-              <Card>
-                <div style={sectionLabel}>Insights & Recommendations</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
 
-                  {/* Discretionary spending */}
-                  <div style={{ padding: "14px", background: "#1a1a2e", borderRadius: "8px", borderLeft: `3px solid ${discretionaryPct > 35 ? "#E8524A" : "#F59E42"}` }}>
-                    <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "4px" }}>
-                      Discretionary Spending: {formatCurrency(discretionaryTotal)}/mo ({discretionaryPct.toFixed(0)}% of net)
-                    </div>
-                    <div style={{ fontSize: "12px", color: "#9ca3af" }}>
-                      {discretionaryPct > 40
-                        ? "This is very high. Eating Out + Friends + Sports alone could be consuming most of your savings potential. Consider setting a hard weekly budget for dining and social spending."
-                        : discretionaryPct > 25
-                        ? "This is elevated. Look at your Eating Out and Friends categories — small cuts here compound quickly over the year."
-                        : "Discretionary spending looks manageable. Keep it here."}
-                    </div>
-                  </div>
-
-                  {/* Over-budget categories */}
-                  {overBudgetItems.length > 0 && (
-                    <div style={{ padding: "14px", background: "#1a1a2e", borderRadius: "8px", borderLeft: "3px solid #E8524A" }}>
-                      <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "6px" }}>
-                        Over Budget: {formatCurrency(totalOverage)}/mo across {overBudgetItems.length} categories
-                      </div>
-                      <div style={{ fontSize: "12px", color: "#9ca3af" }}>
-                        {overBudgetItems.slice(0, 4).map(c =>
-                          `${c.cat}: ${formatCurrency(c.avg)}/mo vs ${formatCurrency(c.recommended)} target (+${formatCurrency(c.overBy)})`
-                        ).join(" · ")}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Eating out deep dive */}
-                  {catMonthlyAvg["Eating Out"] > REG_MONTHLY_NET * 0.08 && (
-                    <div style={{ padding: "14px", background: "#1a1a2e", borderRadius: "8px", borderLeft: "3px solid #FB923C" }}>
-                      <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "4px" }}>
-                        🍽 Eating Out: {formatCurrency(catMonthlyAvg["Eating Out"])}/mo
-                      </div>
-                      <div style={{ fontSize: "12px", color: "#9ca3af" }}>
-                        At this rate, you're spending {formatCurrency(catMonthlyAvg["Eating Out"] * 12)}/yr on dining. Cutting 30% would save {formatCurrency(catMonthlyAvg["Eating Out"] * 12 * 0.3)}/yr toward your down payment. Try the 5-day-a-week home cooking goal — meal prep Sundays at Suruki and Kukje.
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Transportation */}
-                  {catMonthlyAvg["Transportation"] > REG_MONTHLY_NET * 0.10 && (
-                    <div style={{ padding: "14px", background: "#1a1a2e", borderRadius: "8px", borderLeft: "3px solid #F7C948" }}>
-                      <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "4px" }}>
-                        🚗 Transportation: {formatCurrency(catMonthlyAvg["Transportation"])}/mo
-                      </div>
-                      <div style={{ fontSize: "12px", color: "#9ca3af" }}>
-                        Rideshare (Waymo, Uber, Lyft) and parking are adding up. You have a paid-off car — consider driving more instead of rideshares for routine trips, and batch your Fastrak trips.
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Sports/Golf */}
-                  {catMonthlyAvg["Sports"] > REG_MONTHLY_NET * 0.05 && (
-                    <div style={{ padding: "14px", background: "#1a1a2e", borderRadius: "8px", borderLeft: "3px solid #34D399" }}>
-                      <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "4px" }}>
-                        ⛳ Golf: {formatCurrency(catMonthlyAvg["Sports"])}/mo
-                      </div>
-                      <div style={{ fontSize: "12px", color: "#9ca3af" }}>
-                        Golf is a core priority — no cuts needed on the rounds themselves. But look at the ancillary costs: golf shop purchases, food at clubhouses, and multi-course trips. Consider sticking to your usual Bay Area courses to reduce travel and parking costs.
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Savings projection */}
-                  <div style={{ padding: "14px", background: "#1a1a2e", borderRadius: "8px", borderLeft: "3px solid #5B8DEF" }}>
-                    <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: "4px" }}>
-                      🏠 Down Payment Projection
-                    </div>
-                    <div style={{ fontSize: "12px", color: "#9ca3af" }}>
-                      {monthlySurplus > 0
-                        ? `At your current ${formatCurrency(monthlySurplus)}/mo surplus, you'd save ${formatCurrency(annualSavings)}/yr. For a $900K starter home with 10% down ($90K), that's ${(90000 / annualSavings).toFixed(1)} years from liquid savings alone — not counting investment growth or dual income.`
-                        : `You're currently spending more than your net income. Before thinking about a down payment, focus on getting monthly spend below ${formatCurrency(REG_MONTHLY_NET)}.`
-                      }
-                      {totalOverage > 200 && monthlySurplus > 0 && ` Eliminating the ${formatCurrency(totalOverage)}/mo overage would bring you to ${((annualSavings + totalOverage * 12) / ANNUAL_NET * 100).toFixed(0)}% savings rate and cut that timeline significantly.`}
-                    </div>
-                  </div>
-
-                </div>
-              </Card>
 
               {/* AI Insights */}
               <Card>
