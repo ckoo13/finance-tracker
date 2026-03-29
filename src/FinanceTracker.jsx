@@ -149,12 +149,12 @@ export default function FinanceTracker({ session, onChangePassword }) {
   const [uploadError, setUploadError] = useState(null);
 
   // Net worth form
-  const [nwDate, setNwDate] = useState("");
+  const [nwDate, setNwDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [nwAssets, setNwAssets] = useState({});
   const [nwLiabilities, setNwLiabilities] = useState({});
   const [nwPendingCredits, setNwPendingCredits] = useState([{ label: "SP Expenses", amount: "" }]);
 
-  const resetNWForm = () => { setNwDate(""); setNwAssets({}); setNwLiabilities({}); setNwPendingCredits([{ label: "SP Expenses", amount: "" }]); };
+  const resetNWForm = () => { setNwDate(new Date().toISOString().slice(0, 10)); setNwAssets({}); setNwLiabilities({}); setNwPendingCredits([{ label: "SP Expenses", amount: "" }]); };
 
   useEffect(() => {
     if (!userId) return;
@@ -248,7 +248,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
   };
 
   const handleAddNetWorth = async () => {
-    if (!nwDate) return;
+    if (!nwDate) { notify("Please select a date"); return; }
     const assets = {}; let totalAssets = 0;
     ASSET_FIELDS.forEach(f => { const v = parseFloat(nwAssets[f.key]) || 0; assets[f.key] = v; totalAssets += v; });
     const liabilities = {}; let totalLiabilities = 0;
