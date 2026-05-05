@@ -131,6 +131,10 @@ export default function FinanceTracker({ session, onChangePassword }) {
   const [notification, setNotification] = useState(null);
   const [uploadError, setUploadError] = useState(null);
 
+  // Income entries
+  const [incomeEntries, setIncomeEntries] = useState([]);
+  const [incomeForm, setIncomeForm] = useState({ type: 'paycheck', amount: '', date: new Date().toISOString().slice(0, 10), label: '' });
+
   // Net worth form
   const [nwDate, setNwDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [nwAssets, setNwAssets] = useState({});
@@ -150,13 +154,15 @@ export default function FinanceTracker({ session, onChangePassword }) {
   useEffect(() => {
     if (!userId) return;
     (async () => {
-      const [{ data: txns }, { data: nwh }, { data: fields }] = await Promise.all([
+      const [{ data: txns }, { data: nwh }, { data: fields }, { data: income }] = await Promise.all([
         supabase.from('transactions').select('*').eq('user_id', userId).order('date', { ascending: false }),
         supabase.from('net_worth_snapshots').select('*').eq('user_id', userId).order('date', { ascending: true }),
-        supabase.from('user_nw_fields').select('*').eq('user_id', userId).order('sort_order')
+        supabase.from('user_nw_fields').select('*').eq('user_id', userId).order('sort_order'),
+        supabase.from('income_entries').select('*').eq('user_id', userId).order('date', { ascending: false })
       ]);
       setAssetFields((fields || []).filter(f => f.field_type === 'asset'));
       setLiabilityFields((fields || []).filter(f => f.field_type === 'liability'));
+      setIncomeEntries((income || []).map(e => ({ id: e.id, type: e.type, amount: parseFloat(e.amount), date: e.date, label: e.label })));
       setTransactions((txns || []).map(t => ({
         id: t.id, date: t.date, description: t.description,
         amount: parseFloat(t.amount), category: t.category, monthKey: t.month_key
@@ -333,6 +339,54 @@ export default function FinanceTracker({ session, onChangePassword }) {
     notify("Entry deleted");
   };
 
+  const addIncomeEntry = async () => {
+    const amt = parseFloat(incomeForm.amount);
+    if (!amt || !incomeForm.date) { notify("Amount and date are required"); return; }
+    const { data, error } = await supabase.from('income_entries').insert({
+      user_id: userId, type: incomeForm.type, amount: amt,
+      date: incomeForm.date, label: incomeForm.label.trim() || null
+    }).select().single();
+    if (error) { notify("Error: " + error.message); return; }
+    setIncomeEntries([{ id: data.id, type: data.type, amount: parseFloat(data.amount), date: data.date, label: data.label }, ...incomeEntries]);
+    setIncomeForm({ type: 'paycheck', amount: '', date: new Date().toISOString().slice(0, 10), label: '' });
+    notify(incomeForm.type === 'salary' ? "Salary saved" : "Paycheck logged");
+  };
+
+  const deleteIncomeEntry = async (id) => {
+    await supabase.from('income_entries').delete().eq('id', id);
+    setIncomeEntries(incomeEntries.filter(e => e.id !== id));
+    notify("Entry deleted");
+  };
+
+  // Computed income helpers
+  const currentSalary = incomeEntries.find(e => e.type === 'salary');
+  const paychecks = incomeEntries.filter(e => e.type === 'paycheck');
+  const getMonthlyIncome = (monthKey) => {
+    // Sum paychecks that fall in this month
+    const matching = paychecks.filter(p => {
+      const pk = p.date.slice(0, 7); // YYYY-MM
+      return pk === monthKey;
+    });
+    if (matching.length > 0) return matching.reduce((s, p) => s + p.amount, 0);
+    // Fallback: if no paychecks logged yet for this month, estimate from salary
+    if (currentSalary) return currentSalary.amount / 12;
+    return 0;
+  };
+  const getAvgMonthlyNet = () => {
+    if (paychecks.length > 0) {
+      // Get unique months with paychecks and compute average
+      const byMonth = {};
+      paychecks.forEach(p => {
+        const mk = p.date.slice(0, 7);
+        byMonth[mk] = (byMonth[mk] || 0) + p.amount;
+      });
+      const months = Object.values(byMonth);
+      return months.reduce((s, v) => s + v, 0) / months.length;
+    }
+    if (currentSalary) return currentSalary.amount / 12;
+    return 0;
+  };
+
   const addPendingCredit = () => setNwPendingCredits([...nwPendingCredits, { label: "", amount: "" }]);
   const removePendingCredit = (i) => setNwPendingCredits(nwPendingCredits.filter((_, idx) => idx !== i));
   const updatePendingCredit = (i, field, val) => { const u = [...nwPendingCredits]; u[i] = { ...u[i], [field]: val }; setNwPendingCredits(u); };
@@ -377,7 +431,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
           <span style={{ fontSize: "12px", color: "#6b7280", marginLeft: "auto", fontFamily: "'JetBrains Mono', monospace" }}>{transactions.length} txns · {netWorthHistory.length} snapshots</span>
         </div>
         <div style={{ display: "flex" }}>
-          {["dashboard", "analysis", "import", "transactions", "networth"].map(t => (
+          {["dashboard", "analysis", "income", "import", "transactions", "networth"].map(t => (
             <TabButton key={t} active={tab === t} onClick={() => setTab(t)}>
               {t === "networth" ? "Net Worth" : t.charAt(0).toUpperCase() + t.slice(1)}
             </TabButton>
@@ -491,17 +545,10 @@ export default function FinanceTracker({ session, onChangePassword }) {
 
         {/* ═══ ANALYSIS ═══ */}
         {tab === "analysis" && (() => {
-          // Real income from paystubs (Nov 2025 - Feb 2026)
-          // Regular biweekly take-home: $2,462.45 avg across 7 regular paychecks
-          // Bonus quarter paycheck: $5,908.61 net (includes $6,250 gross bonus)
-          // Bonus extra net vs regular paycheck: $3,446.16
-          const REG_PAYCHECK_NET = 2462;
-          const BONUS_EXTRA_NET = 3446; // extra net on bonus paycheck vs regular
-          const PAYCHECKS_PER_MONTH = 26 / 12; // 26 biweekly pays per year
-          const REG_MONTHLY_NET = Math.round(REG_PAYCHECK_NET * PAYCHECKS_PER_MONTH); // ~$5,335
-          const BONUS_MONTHS = [1, 4, 7, 10]; // Jan, Apr, Jul, Oct
-          const ANNUAL_NET = (REG_PAYCHECK_NET * 26) + (BONUS_EXTRA_NET * 4); // ~$77,796
-          const AVG_MONTHLY_NET = Math.round(ANNUAL_NET / 12); // ~$6,483
+          // Dynamic income from user's logged paychecks and salary
+          const AVG_MONTHLY_NET = Math.round(getAvgMonthlyNet());
+          const ANNUAL_NET = AVG_MONTHLY_NET * 12;
+          const REG_MONTHLY_NET = AVG_MONTHLY_NET;
 
           // Recommended budget benchmarks (% of regular monthly net ~$5,317)
           const benchmarks = {
@@ -528,11 +575,10 @@ export default function FinanceTracker({ session, onChangePassword }) {
           const annualSavings = monthlySurplus * 12;
           const savingsRate = ANNUAL_NET > 0 ? (annualSavings / ANNUAL_NET) * 100 : 0;
 
-          // Per-month income tracking
+          // Per-month income tracking (from logged paychecks or salary estimate)
           const monthlyIncome = {};
           Object.keys(monthlyTotals).forEach(mk => {
-            const mo = parseInt(mk.split("-")[1]);
-            monthlyIncome[mk] = BONUS_MONTHS.includes(mo) ? REG_MONTHLY_NET + BONUS_EXTRA_NET : REG_MONTHLY_NET;
+            monthlyIncome[mk] = getMonthlyIncome(mk);
           });
 
           // Per-category monthly averages
@@ -565,8 +611,8 @@ export default function FinanceTracker({ session, onChangePassword }) {
             const spent = monthlyTotals[mk] || 0;
             const surplus = income - spent;
             const moIdx = parseInt(mk.split("-")[1]) - 1;
-            const isBonus = BONUS_MONTHS.includes(parseInt(mk.split("-")[1]));
-            return { label: MONTHS[moIdx], spent, income, surplus, isBonus };
+            const isHighIncome = AVG_MONTHLY_NET > 0 && income > AVG_MONTHLY_NET * 1.2;
+            return { label: MONTHS[moIdx], spent, income, surplus, isHighIncome };
           });
 
           const statusColor = savingsRate >= 20 ? "#34D399" : savingsRate >= 10 ? "#F59E42" : "#E8524A";
@@ -581,7 +627,8 @@ export default function FinanceTracker({ session, onChangePassword }) {
                   {(years.length ? years : [new Date().getFullYear().toString()]).map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
                 <span style={{ fontSize: "12px", color: "#6b7280" }}>
-                  {monthsWithData} month{monthsWithData > 1 ? "s" : ""} of data · Regular: ~{formatCurrency(REG_MONTHLY_NET)}/mo · Bonus Qtr: +{formatCurrency(BONUS_EXTRA_NET)} · Annual Net: ~{formatCurrency(ANNUAL_NET)}
+                  {monthsWithData} month{monthsWithData > 1 ? "s" : ""} of data · Avg Income: ~{formatCurrency(AVG_MONTHLY_NET)}/mo · Annual Net: ~{formatCurrency(ANNUAL_NET)}
+                  {!currentSalary && paychecks.length === 0 && <span style={{ color: "#F59E42" }}> · Set up income in the Income tab</span>}
                 </span>
               </div>
 
@@ -591,7 +638,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
 
               {/* Key metrics */}
               <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
-                <StatCard label="Avg Monthly Net" value={formatCurrency(AVG_MONTHLY_NET)} accent="#34D399" sub={`${formatCurrency(REG_MONTHLY_NET)} base + bonus qtrs`} />
+                <StatCard label="Avg Monthly Net" value={formatCurrency(AVG_MONTHLY_NET)} accent="#34D399" sub={paychecks.length > 0 ? `From ${paychecks.length} logged paycheck${paychecks.length > 1 ? "s" : ""}` : currentSalary ? `Based on ${formatCurrency(currentSalary.amount)}/yr salary` : "No income data"} />
                 <StatCard label="Avg Monthly Spend" value={formatCurrency(monthlyAvgSpend)} accent="#E8524A" sub={`${formatCurrency(totalSpent)} over ${monthsWithData}mo`} />
                 <StatCard label="Monthly Surplus" value={formatCurrency(monthlySurplus)} accent={monthlySurplus > 0 ? "#34D399" : "#E8524A"} sub={`${savingsRate.toFixed(1)}% savings rate`} />
                 <Card style={{ flex: 1, minWidth: "160px" }}>
@@ -619,7 +666,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
                             <div style={{
                               width: "45%", maxWidth: "24px",
                               height: `${Math.max((d.income / maxVal) * 140, 4)}px`,
-                              background: d.isBonus ? "linear-gradient(180deg, #34D399, #10B981)" : "#2a3a2e",
+                              background: d.isHighIncome ? "linear-gradient(180deg, #34D399, #10B981)" : "#2a3a2e",
                               borderRadius: "3px 3px 0 0"
                             }} />
                             <div style={{
@@ -629,16 +676,16 @@ export default function FinanceTracker({ session, onChangePassword }) {
                               borderRadius: "3px 3px 0 0"
                             }} />
                           </div>
-                          <div style={{ fontSize: "10px", color: "#6b7280" }}>{d.label}{d.isBonus ? "*" : ""}</div>
+                          <div style={{ fontSize: "10px", color: "#6b7280" }}>{d.label}{d.isHighIncome ? "*" : ""}</div>
                         </div>
                       );
                     })}
                   </div>
                   <div style={{ marginTop: "8px", display: "flex", gap: "16px", justifyContent: "center", fontSize: "11px", color: "#6b7280" }}>
                     <span><span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "2px", background: "#2a3a2e", marginRight: "4px" }} />Income</span>
-                    <span><span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "2px", background: "#34D399", marginRight: "4px" }} />Bonus Month</span>
+                    <span><span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "2px", background: "#34D399", marginRight: "4px" }} />High Income Month</span>
                     <span><span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "2px", background: "#5B8DEF", marginRight: "4px" }} />Spend</span>
-                    <span>* = bonus quarter</span>
+                    <span>* = above avg income</span>
                   </div>
                 </Card>
               )}
@@ -755,6 +802,109 @@ export default function FinanceTracker({ session, onChangePassword }) {
             </div>
           );
         })()}
+
+        {/* ═══ INCOME ═══ */}
+        {tab === "income" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+            {/* Set Base Salary */}
+            <Card>
+              <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "16px", fontFamily: "'DM Sans', sans-serif" }}>Base Salary</div>
+              {currentSalary && (
+                <div style={{ marginBottom: "16px", padding: "12px", background: "#1a1a2e", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div>
+                    <div style={{ fontSize: "20px", fontWeight: 700, color: "#34D399", fontFamily: "'JetBrains Mono', monospace" }}>{formatCurrency(currentSalary.amount)}<span style={{ fontSize: "12px", color: "#6b7280" }}>/yr</span></div>
+                    <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "4px" }}>~{formatCurrency(currentSalary.amount / 12)}/mo · Set {currentSalary.date}{currentSalary.label ? ` · ${currentSalary.label}` : ''}</div>
+                  </div>
+                  <button onClick={() => deleteIncomeEntry(currentSalary.id)} style={{ background: "none", border: "1px solid #252545", borderRadius: "6px", color: "#E8524A", cursor: "pointer", padding: "4px 10px", fontSize: "11px" }}>Remove</button>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: "140px" }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>Annual Salary (gross or net)</div>
+                  <input type="number" placeholder="e.g. 95000" value={incomeForm.type === 'salary' ? incomeForm.amount : ''} onChange={e => setIncomeForm({ ...incomeForm, type: 'salary', amount: e.target.value })} style={{ background: "#1a1a2e", border: "1px solid #252545", borderRadius: "8px", padding: "10px 12px", color: "#e0e0e0", fontSize: "14px", fontFamily: "'JetBrains Mono', monospace", outline: "none", width: "100%", boxSizing: "border-box" }} />
+                </div>
+                <div style={{ minWidth: "130px" }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>Effective Date</div>
+                  <input type="date" value={incomeForm.type === 'salary' ? incomeForm.date : ''} onChange={e => setIncomeForm({ ...incomeForm, type: 'salary', date: e.target.value })} style={{ background: "#1a1a2e", border: "1px solid #252545", borderRadius: "8px", padding: "10px 12px", color: "#e0e0e0", fontSize: "13px", outline: "none", width: "100%", boxSizing: "border-box" }} />
+                </div>
+                <button onClick={() => { setIncomeForm({ ...incomeForm, type: 'salary' }); addIncomeEntry(); }} style={{ background: "#5B8DEF", color: "#fff", border: "none", borderRadius: "8px", padding: "10px 18px", fontWeight: 600, cursor: "pointer", fontSize: "13px", fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap" }}>
+                  {currentSalary ? "Update Salary" : "Set Salary"}
+                </button>
+              </div>
+            </Card>
+
+            {/* Log Paycheck */}
+            <Card>
+              <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "16px", fontFamily: "'DM Sans', sans-serif" }}>Log Paycheck</div>
+              <div style={{ fontSize: "12px", color: "#6b7280", marginBottom: "12px" }}>Record each paycheck's net take-home. These sum up to your monthly total income.</div>
+              <div style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: "120px" }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>Net Amount</div>
+                  <input type="number" placeholder="e.g. 2462" value={incomeForm.type === 'paycheck' ? incomeForm.amount : ''} onChange={e => setIncomeForm({ ...incomeForm, type: 'paycheck', amount: e.target.value })} style={{ background: "#1a1a2e", border: "1px solid #252545", borderRadius: "8px", padding: "10px 12px", color: "#e0e0e0", fontSize: "14px", fontFamily: "'JetBrains Mono', monospace", outline: "none", width: "100%", boxSizing: "border-box" }} />
+                </div>
+                <div style={{ minWidth: "130px" }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>Pay Date</div>
+                  <input type="date" value={incomeForm.type === 'paycheck' ? incomeForm.date : ''} onChange={e => setIncomeForm({ ...incomeForm, type: 'paycheck', date: e.target.value })} style={{ background: "#1a1a2e", border: "1px solid #252545", borderRadius: "8px", padding: "10px 12px", color: "#e0e0e0", fontSize: "13px", outline: "none", width: "100%", boxSizing: "border-box" }} />
+                </div>
+                <div style={{ minWidth: "120px" }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>Label (optional)</div>
+                  <input type="text" placeholder="e.g. Bonus" value={incomeForm.type === 'paycheck' ? incomeForm.label : ''} onChange={e => setIncomeForm({ ...incomeForm, type: 'paycheck', label: e.target.value })} style={{ background: "#1a1a2e", border: "1px solid #252545", borderRadius: "8px", padding: "10px 12px", color: "#e0e0e0", fontSize: "13px", outline: "none", width: "100%", boxSizing: "border-box" }} />
+                </div>
+                <button onClick={() => { setIncomeForm({ ...incomeForm, type: 'paycheck' }); addIncomeEntry(); }} style={{ background: "#34D399", color: "#0f0f1e", border: "none", borderRadius: "8px", padding: "10px 18px", fontWeight: 600, cursor: "pointer", fontSize: "13px", fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap" }}>
+                  Log Paycheck
+                </button>
+              </div>
+            </Card>
+
+            {/* Paycheck History */}
+            <Card>
+              <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "16px", fontFamily: "'DM Sans', sans-serif" }}>Paycheck History</div>
+              {paychecks.length === 0 ? (
+                <div style={{ color: "#6b7280", fontSize: "13px", textAlign: "center", padding: "20px" }}>No paychecks logged yet. Log your first paycheck above.</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                  {/* Monthly summary */}
+                  {(() => {
+                    const byMonth = {};
+                    paychecks.forEach(p => {
+                      const mk = p.date.slice(0, 7);
+                      if (!byMonth[mk]) byMonth[mk] = { total: 0, count: 0 };
+                      byMonth[mk].total += p.amount;
+                      byMonth[mk].count++;
+                    });
+                    const monthKeys = Object.keys(byMonth).sort().reverse();
+                    return (
+                      <div style={{ marginBottom: "16px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                        {monthKeys.slice(0, 6).map(mk => {
+                          const m = byMonth[mk];
+                          const [y, mo] = mk.split("-");
+                          return (
+                            <div key={mk} style={{ background: "#1a1a2e", borderRadius: "8px", padding: "10px 14px", minWidth: "100px" }}>
+                              <div style={{ fontSize: "11px", color: "#6b7280" }}>{MONTHS[parseInt(mo) - 1]} {y}</div>
+                              <div style={{ fontSize: "16px", fontWeight: 700, color: "#34D399", fontFamily: "'JetBrains Mono', monospace" }}>{formatCurrency(m.total)}</div>
+                              <div style={{ fontSize: "10px", color: "#4b5563" }}>{m.count} paycheck{m.count > 1 ? "s" : ""}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                  {/* Individual entries */}
+                  <div style={{ maxHeight: "300px", overflowY: "auto" }}>
+                    {paychecks.map(p => (
+                      <div key={p.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "8px 0", borderBottom: "1px solid #252545" }}>
+                        <span style={{ fontSize: "12px", color: "#6b7280", width: "85px", fontFamily: "'JetBrains Mono', monospace" }}>{p.date}</span>
+                        <span style={{ fontSize: "14px", fontWeight: 600, color: "#34D399", fontFamily: "'JetBrains Mono', monospace", width: "100px" }}>{formatCurrency(p.amount)}</span>
+                        <span style={{ fontSize: "12px", color: "#9ca3af", flex: 1 }}>{p.label || "Regular"}</span>
+                        <button onClick={() => deleteIncomeEntry(p.id)} style={{ background: "none", border: "none", color: "#E8524A", cursor: "pointer", fontSize: "14px", padding: "4px 8px" }}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </Card>
+          </div>
+        )}
 
         {/* ═══ IMPORT ═══ */}
         {tab === "import" && (
