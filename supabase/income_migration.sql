@@ -3,9 +3,10 @@ CREATE TABLE income_entries (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   type TEXT NOT NULL CHECK (type IN ('salary', 'paycheck')),
-  -- For 'salary': annual base salary (gross), effective_date = when this salary started
+  -- For 'salary': annual gross salary, effective_date = when this salary started
   -- For 'paycheck': actual net take-home for a single paycheck
   amount DECIMAL(10,2) NOT NULL,
+  tax_rate DECIMAL(5,2) DEFAULT 0, -- effective tax rate % (used for salary → net calculation)
   date TEXT NOT NULL,           -- YYYY-MM-DD: effective date (salary) or pay date (paycheck)
   label TEXT,                   -- optional label, e.g. "Q1 Bonus paycheck", "Regular biweekly"
   created_at TIMESTAMPTZ DEFAULT NOW()

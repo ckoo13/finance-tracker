@@ -133,7 +133,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
 
   // Income entries
   const [incomeEntries, setIncomeEntries] = useState([]);
-  const [incomeForm, setIncomeForm] = useState({ type: 'paycheck', amount: '', date: new Date().toISOString().slice(0, 10), label: '' });
+  const [incomeForm, setIncomeForm] = useState({ type: 'paycheck', amount: '', date: new Date().toISOString().slice(0, 10), label: '', taxRate: '' });
 
   // Net worth form
   const [nwDate, setNwDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -162,7 +162,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
       ]);
       setAssetFields((fields || []).filter(f => f.field_type === 'asset'));
       setLiabilityFields((fields || []).filter(f => f.field_type === 'liability'));
-      setIncomeEntries((income || []).map(e => ({ id: e.id, type: e.type, amount: parseFloat(e.amount), date: e.date, label: e.label })));
+      setIncomeEntries((income || []).map(e => ({ id: e.id, type: e.type, amount: parseFloat(e.amount), taxRate: parseFloat(e.tax_rate) || 0, date: e.date, label: e.label })));
       setTransactions((txns || []).map(t => ({
         id: t.id, date: t.date, description: t.description,
         amount: parseFloat(t.amount), category: t.category, monthKey: t.month_key
@@ -342,13 +342,14 @@ export default function FinanceTracker({ session, onChangePassword }) {
   const addIncomeEntry = async () => {
     const amt = parseFloat(incomeForm.amount);
     if (!amt || !incomeForm.date) { notify("Amount and date are required"); return; }
+    const taxRate = parseFloat(incomeForm.taxRate) || 0;
     const { data, error } = await supabase.from('income_entries').insert({
       user_id: userId, type: incomeForm.type, amount: amt,
-      date: incomeForm.date, label: incomeForm.label.trim() || null
+      tax_rate: taxRate, date: incomeForm.date, label: incomeForm.label.trim() || null
     }).select().single();
     if (error) { notify("Error: " + error.message); return; }
-    setIncomeEntries([{ id: data.id, type: data.type, amount: parseFloat(data.amount), date: data.date, label: data.label }, ...incomeEntries]);
-    setIncomeForm({ type: 'paycheck', amount: '', date: new Date().toISOString().slice(0, 10), label: '' });
+    setIncomeEntries([{ id: data.id, type: data.type, amount: parseFloat(data.amount), taxRate: parseFloat(data.tax_rate) || 0, date: data.date, label: data.label }, ...incomeEntries]);
+    setIncomeForm({ type: 'paycheck', amount: '', date: new Date().toISOString().slice(0, 10), label: '', taxRate: '' });
     notify(incomeForm.type === 'salary' ? "Salary saved" : "Paycheck logged");
   };
 
@@ -361,16 +362,15 @@ export default function FinanceTracker({ session, onChangePassword }) {
   // Computed income helpers
   const currentSalary = incomeEntries.find(e => e.type === 'salary');
   const paychecks = incomeEntries.filter(e => e.type === 'paycheck');
+  // Net monthly from salary after taxes
+  const salaryMonthlyNet = currentSalary ? (currentSalary.amount * (1 - currentSalary.taxRate / 100)) / 12 : 0;
+
   const getMonthlyIncome = (monthKey) => {
-    // Sum paychecks that fall in this month
-    const matching = paychecks.filter(p => {
-      const pk = p.date.slice(0, 7); // YYYY-MM
-      return pk === monthKey;
-    });
+    // Sum paychecks that fall in this month (paychecks are already net)
+    const matching = paychecks.filter(p => p.date.slice(0, 7) === monthKey);
     if (matching.length > 0) return matching.reduce((s, p) => s + p.amount, 0);
-    // Fallback: if no paychecks logged yet for this month, estimate from salary
-    if (currentSalary) return currentSalary.amount / 12;
-    return 0;
+    // Fallback: estimate from salary minus taxes
+    return salaryMonthlyNet;
   };
   const getAvgMonthlyNet = () => {
     if (paychecks.length > 0) {
@@ -383,8 +383,7 @@ export default function FinanceTracker({ session, onChangePassword }) {
       const months = Object.values(byMonth);
       return months.reduce((s, v) => s + v, 0) / months.length;
     }
-    if (currentSalary) return currentSalary.amount / 12;
-    return 0;
+    return salaryMonthlyNet;
   };
 
   const addPendingCredit = () => setNwPendingCredits([...nwPendingCredits, { label: "", amount: "" }]);
@@ -813,15 +812,21 @@ export default function FinanceTracker({ session, onChangePassword }) {
                 <div style={{ marginBottom: "16px", padding: "12px", background: "#1a1a2e", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div>
                     <div style={{ fontSize: "20px", fontWeight: 700, color: "#34D399", fontFamily: "'JetBrains Mono', monospace" }}>{formatCurrency(currentSalary.amount)}<span style={{ fontSize: "12px", color: "#6b7280" }}>/yr</span></div>
-                    <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "4px" }}>~{formatCurrency(currentSalary.amount / 12)}/mo · Set {currentSalary.date}{currentSalary.label ? ` · ${currentSalary.label}` : ''}</div>
+                    <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "4px" }}>
+                      {currentSalary.taxRate > 0 ? `${currentSalary.taxRate}% tax → ~${formatCurrency(salaryMonthlyNet)}/mo net` : `~${formatCurrency(currentSalary.amount / 12)}/mo`} · Set {currentSalary.date}{currentSalary.label ? ` · ${currentSalary.label}` : ''}
+                    </div>
                   </div>
                   <button onClick={() => deleteIncomeEntry(currentSalary.id)} style={{ background: "none", border: "1px solid #252545", borderRadius: "6px", color: "#E8524A", cursor: "pointer", padding: "4px 10px", fontSize: "11px" }}>Remove</button>
                 </div>
               )}
               <div style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap" }}>
                 <div style={{ flex: 1, minWidth: "140px" }}>
-                  <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>Annual Salary (gross or net)</div>
+                  <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>Annual Gross Salary</div>
                   <input type="number" placeholder="e.g. 95000" value={incomeForm.type === 'salary' ? incomeForm.amount : ''} onChange={e => setIncomeForm({ ...incomeForm, type: 'salary', amount: e.target.value })} style={{ background: "#1a1a2e", border: "1px solid #252545", borderRadius: "8px", padding: "10px 12px", color: "#e0e0e0", fontSize: "14px", fontFamily: "'JetBrains Mono', monospace", outline: "none", width: "100%", boxSizing: "border-box" }} />
+                </div>
+                <div style={{ minWidth: "100px" }}>
+                  <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>Tax Rate %</div>
+                  <input type="number" placeholder="e.g. 30" value={incomeForm.type === 'salary' ? incomeForm.taxRate : ''} onChange={e => setIncomeForm({ ...incomeForm, type: 'salary', taxRate: e.target.value })} style={{ background: "#1a1a2e", border: "1px solid #252545", borderRadius: "8px", padding: "10px 12px", color: "#e0e0e0", fontSize: "14px", fontFamily: "'JetBrains Mono', monospace", outline: "none", width: "100%", boxSizing: "border-box" }} />
                 </div>
                 <div style={{ minWidth: "130px" }}>
                   <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>Effective Date</div>
@@ -831,6 +836,11 @@ export default function FinanceTracker({ session, onChangePassword }) {
                   {currentSalary ? "Update Salary" : "Set Salary"}
                 </button>
               </div>
+              {incomeForm.type === 'salary' && incomeForm.amount && (
+                <div style={{ marginTop: "8px", fontSize: "12px", color: "#6b7280" }}>
+                  Estimated net: ~{formatCurrency((parseFloat(incomeForm.amount) || 0) * (1 - (parseFloat(incomeForm.taxRate) || 0) / 100) / 12)}/mo after {incomeForm.taxRate || 0}% tax
+                </div>
+              )}
             </Card>
 
             {/* Log Paycheck */}
